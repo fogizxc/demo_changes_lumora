@@ -1,0 +1,40 @@
+[
+  {
+    "phone": "+91 98201 22334",
+    "name": "Rahul Verma",
+    "email": "rahul.verma@example.com",
+    "loyalty": {
+      "tier": "Gold",
+      "points": 340,
+      "total_spend": 14850,
+      "lifetime_orders": 24
+    },
+    "preferences": {
+      "paperless_receipts": true,
+      "preferred_payment": "UPI"
+    },
+    "_id": "c46df1e0-1d1c-4233-a987-4eda316aaeaa",
+    "createdAt": "2026-09-21T13:46:24.006Z",
+    "loyalty.points": 2,
+    "loyalty.lifetime_orders": 2,
+    "loyalty.total_spend": 56,
+    "updatedAt": "2026-09-21T13:52:50.900Z"
+  },
+  {
+    "phone": "+91 98211 44556",
+    "name": "Priya Sharma",
+    "email": "priya.s@example.com",
+    "loyalty": {
+      "tier": "Silver",
+      "points": 180,
+      "total_spend": 6400,
+      "lifetime_orders": 11
+    },
+    "preferences": {
+      "paperless_receipts": false,
+      "preferred_payment": "CARD"
+    },
+    "_id": "b75bee1e-2f9d-4bc6-ac20-3cc441fb6f2e",
+    "createdAt": "2026-09-21T13:46:24.006Z"
+  }
+]

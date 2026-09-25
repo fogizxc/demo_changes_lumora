@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Playfair Display", Georgia, serif;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --color-primary-dark-red: #68151F;
+  --color-primary-red: #9A303B;
+  --color-cream: #F7F1E7;
+  --color-cream-surface: #FFFDF8;
+  --color-cream-border: #E5DDCF;
+  --color-navy: #102A43;
+  --color-navy-dark: #081C2E;
+  --color-text-primary: #171717;
+  --color-text-secondary: #6B625A;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #F7F1E7;
+  color: #171717;
+}
+
+.font-serif {
+  font-family: "Playfair Display", Georgia, serif;
+}
+
+.font-sans {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+.font-mono {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.font-script {
+  font-family: "Caveat", cursive, sans-serif;
+}
+
+.font-calligraphy {
+  font-family: "Great Vibes", cursive;
+}
+
+.font-dancing {
+  font-family: "Dancing Script", cursive;
+}
+
+.font-pacifico {
+  font-family: "Pacifico", cursive;
+}
+
+.font-marker {
+  font-family: "Permanent Marker", cursive;
+}
+
+.font-satisfy {
+  font-family: "Satisfy", cursive;
+}
+
+.font-righteous {
+  font-family: "Righteous", cursive, sans-serif;
+}
+
+.font-fatface {
+  font-family: "Abril Fatface", serif;
+}
+
+.font-caveat {
+  font-family: "Caveat", cursive;
+}
+
+/* Custom scrollbar matching cream palette */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F7F1E7;
+}
+::-webkit-scrollbar-thumb {
+  background: #D9CEBE;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #68151F;
+}

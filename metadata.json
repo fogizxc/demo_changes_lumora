@@ -1,0 +1,7 @@
+{
+  "name": "Lumora",
+  "description": "LUMORA: One System. More Possibilities. Unified Retail POS and Multi-Tenant Shop ERP platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

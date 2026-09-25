@@ -1,0 +1,53 @@
+[
+  {
+    "partition_key": "SHOP-01#2026-09-21",
+    "clustering_key": 1789998770901,
+    "data": {
+      "action": "POS_CHECKOUT_COMPLETED",
+      "invoiceNumber": "INV-770901",
+      "totalAmount": 29.4,
+      "paymentMethod": "UPI",
+      "itemsCount": 1,
+      "cashier": "Amit Kumar (EMP-02)",
+      "device": "POS-TERMINAL-01"
+    },
+    "written_at": "2026-09-21T13:52:50.901Z"
+  },
+  {
+    "partition_key": "SHOP-01#2026-09-21",
+    "clustering_key": 1789998386094,
+    "data": {
+      "action": "POS_CHECKOUT_COMPLETED",
+      "invoiceNumber": "INV-386094",
+      "totalAmount": 29.4,
+      "paymentMethod": "UPI",
+      "itemsCount": 1,
+      "cashier": "Amit Kumar (EMP-02)",
+      "device": "POS-TERMINAL-01"
+    },
+    "written_at": "2026-09-21T13:46:26.094Z"
+  },
+  {
+    "partition_key": "SHOP-01#2026-09-21",
+    "clustering_key": 1789996584014,
+    "data": {
+      "event_type": "BARCODE_HARDWARE_SCAN",
+      "device_id": "HONEYWELL-SCANNER-2D",
+      "barcode": "8901058852331",
+      "scan_latency_ms": 12,
+      "signal_dbm": -42
+    },
+    "written_at": "2026-09-21T13:46:24.014Z"
+  },
+  {
+    "partition_key": "SHOP-01#2026-09-21",
+    "clustering_key": 1789994784007,
+    "data": {
+      "event_type": "REGISTER_OPENED",
+      "device_id": "POS-TERMINAL-01",
+      "actor": "EMP-02 (Amit Kumar)",
+      "details": "Cash register till opened with float balance ₹1,000.00"
+    },
+    "written_at": "2026-09-21T13:46:24.007Z"
+  }
+]

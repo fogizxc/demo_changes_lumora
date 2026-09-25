@@ -1,0 +1,53 @@
+[
+  {
+    "partition_key": "SHOP-01#2026-09",
+    "clustering_key": 20260042,
+    "data": {
+      "invoice_number": "INV-2026-0042",
+      "total_amount": 420,
+      "tax_gst": 20,
+      "payment_method": "UPI",
+      "line_items_count": 3,
+      "tamper_proof_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "written_at": "2026-09-21T13:46:24.016Z"
+  },
+  {
+    "partition_key": "SHOP-01#2026-09",
+    "clustering_key": 1789998770902,
+    "data": {
+      "invoiceNumber": "INV-770901",
+      "grandTotal": 29.4,
+      "taxGst": 1.4,
+      "items": [
+        {
+          "name": "Tata Salt",
+          "sku": "GRC-TAT-1K",
+          "price": 28,
+          "quantity": 1
+        }
+      ],
+      "immutableHash": "sha256:494e562d37373039303132392e34"
+    },
+    "written_at": "2026-09-21T13:52:50.902Z"
+  },
+  {
+    "partition_key": "SHOP-01#2026-09",
+    "clustering_key": 1789998386094,
+    "data": {
+      "invoiceNumber": "INV-386094",
+      "grandTotal": 29.4,
+      "taxGst": 1.4,
+      "items": [
+        {
+          "name": "Maggi Noodles 70g",
+          "sku": "SNK-MAG-70",
+          "price": 14,
+          "quantity": 2
+        }
+      ],
+      "immutableHash": "sha256:494e562d33383630393432392e34"
+    },
+    "written_at": "2026-09-21T13:46:26.094Z"
+  }
+]
