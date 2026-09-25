@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
 import { Header } from './components/common/Header';
 import { LoginView } from './components/auth/LoginView';
 import { SuperAdminLayout } from './components/superAdmin/SuperAdminLayout';
@@ -54,7 +55,9 @@ const AppContent: React.FC = () => {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
     </AuthProvider>
   );
 }

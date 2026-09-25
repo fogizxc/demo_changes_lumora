@@ -333,6 +333,24 @@ export function initDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS auth_rate_limits (
+      key TEXT PRIMARY KEY,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      locked_until TEXT,
+      last_attempt_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS security_events (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'INFO',
+      actor_id TEXT,
+      tenant_id TEXT,
+      ip_address TEXT,
+      details TEXT,
+      timestamp TEXT NOT NULL
+    );
+
     -- =========================================================================
     -- LUMORA MULTI-TENANT CORE + MODULAR INDUSTRY ENGINES
     -- =========================================================================
@@ -373,6 +391,29 @@ export function initDatabase() {
       settings TEXT DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_tenant_memberships (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      branch_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, tenant_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS healthcare_access_log (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      patient_id TEXT,
+      details TEXT,
+      timestamp TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS roles (
@@ -695,6 +736,9 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_repair_jobs ON repair_jobs(business_id, status);
     CREATE INDEX IF NOT EXISTS idx_rental_bookings ON rental_bookings(business_id, asset_id);
     CREATE INDEX IF NOT EXISTS idx_expenses_biz ON expenses(business_id, category);
+    CREATE INDEX IF NOT EXISTS idx_memberships_user ON user_tenant_memberships(user_id);
+    CREATE INDEX IF NOT EXISTS idx_memberships_tenant ON user_tenant_memberships(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_health_log_tenant ON healthcare_access_log(tenant_id);
   `);
 
   // Migration: verify/add columns in products table
@@ -885,6 +929,72 @@ export function initDatabase() {
   seedDefaultData();
   seedMultiTenantData();
   seedIndustryShopAccounts();
+  syncUserTenantMemberships();
+}
+
+function syncUserTenantMemberships() {
+  const now = new Date().toISOString();
+  try {
+    // 1. Sync all shop admins / users into canonical user_tenant_memberships
+    const users = db.prepare("SELECT id, shop_id, role FROM users WHERE role != 'SUPER_ADMIN' AND shop_id IS NOT NULL").all() as any[];
+    for (const u of users) {
+      db.prepare(`
+        INSERT OR IGNORE INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)
+      `).run(`mem_u_${u.id}`, u.id, u.shop_id, u.role === 'SHOP_ADMIN' ? 'OWNER' : u.role, now, now);
+    }
+
+    // 2. Sync all employees into canonical user_tenant_memberships
+    const employees = db.prepare("SELECT id, shop_id, tier, status FROM employees WHERE shop_id IS NOT NULL").all() as any[];
+    for (const e of employees) {
+      db.prepare(`
+        INSERT OR IGNORE INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(`mem_e_${e.id}`, e.id, e.shop_id, e.tier, e.status || 'ACTIVE', now, now);
+    }
+
+    // 3. Ensure all shops have a synchronized 1:1 business record
+    const shops = db.prepare('SELECT * FROM shops').all() as any[];
+    for (const s of shops) {
+      const existingBiz = db.prepare('SELECT id FROM businesses WHERE id = ?').get(s.id);
+      if (!existingBiz) {
+        const ind = (s.shop_type || 'RETAIL').toUpperCase();
+        let defaultModules = ['POS', 'INVENTORY', 'CRM', 'BILLING', 'EXPENSES', 'REPORTS'];
+        if (ind === 'HEALTHCARE') defaultModules = ['HEALTHCARE', 'PATIENTS', 'DOCTORS', 'APPOINTMENTS', 'MEDICAL_RECORDS', 'BILLING', 'EXPENSES', 'REPORTS'];
+        else if (ind === 'GYM') defaultModules = ['GYM', 'MEMBERS', 'PLANS', 'ATTENDANCE', 'BILLING', 'EXPENSES', 'REPORTS'];
+        else if (ind === 'RESTAURANT') defaultModules = ['RESTAURANT', 'TABLES', 'ORDERS', 'KOT', 'BILLING', 'EXPENSES', 'REPORTS'];
+        else if (ind === 'RENTAL') defaultModules = ['RENTAL', 'ASSETS', 'BOOKINGS', 'RETURNS', 'BILLING', 'EXPENSES', 'REPORTS'];
+        else if (ind === 'REPAIR') defaultModules = ['REPAIR', 'JOBS', 'DIAGNOSTICS', 'PARTS', 'BILLING', 'EXPENSES', 'REPORTS'];
+
+        db.prepare(`
+          INSERT INTO businesses (
+            id, name, slug, industry, business_type, status, logo, email, phone, website,
+            address, country, state, city, timezone, currency, tax_configuration, enabled_modules, settings, created_at, updated_at
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL,
+            ?, 'India', 'Maharashtra', 'Mumbai', 'Asia/Kolkata', 'INR',
+            ?, ?, '{}', ?, ?
+          )
+        `).run(
+          s.id,
+          s.name,
+          s.id.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          ind,
+          `${ind}_STANDARD`,
+          s.status || 'ACTIVE',
+          `contact@${s.id}.com`,
+          s.phone,
+          s.address,
+          JSON.stringify({ gst: s.gst_number, tax_state: s.tax_state }),
+          JSON.stringify(defaultModules),
+          s.created_at || now,
+          s.updated_at || now
+        );
+      }
+    }
+  } catch (err) {
+    console.error('Error syncing user tenant memberships:', err);
+  }
 }
 
 function seedIndustryShopAccounts() {

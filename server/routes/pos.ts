@@ -39,19 +39,29 @@ posRouter.get('/products', (req: Request, res: Response) => {
   const products = db.prepare(query).all(...params);
   const categories = db.prepare("SELECT DISTINCT category FROM products WHERE shop_id = ? AND status = 'ACTIVE' ORDER BY category ASC").all(shopId).map((c: any) => c.category);
 
-  res.json({ products, categories });
+  // Financial Data Protection: Cashiers and staff do not see cost prices or gross margins
+  const canViewCost = req.auth?.role === 'SHOP_ADMIN' || req.auth?.role === 'SUPER_ADMIN';
+  const sanitizedProducts = products.map((p: any) => {
+    if (!canViewCost) {
+      const { cost_price, ...rest } = p;
+      return rest;
+    }
+    return p;
+  });
+
+  res.json({ products: sanitizedProducts, categories });
 });
 
-// 2. Ultra-Fast Barcode / SKU Direct Lookup (Scanner Emulation with Redis Cache & Cassandra Scan Log)
+// 2. Ultra-Fast Barcode / SKU Direct Lookup (Scanner Emulation with Tenant-Namespaced Redis Cache)
 posRouter.get('/barcode/:barcode', async (req: Request, res: Response) => {
   const shopId = req.auth!.shopId!;
   const { barcode } = req.params;
+  const cacheKey = `cache:tenant:${shopId}:barcode:${barcode}`;
 
-  // Check Redis in-memory cache first (sub-millisecond retrieval)
+  // Check Redis in-memory cache first with strict tenant isolation
   try {
-    const cached = await redis.get(`cache:barcode:${barcode}`);
+    const cached = await redis.get(cacheKey);
     if (cached && (cached as any).shop_id === shopId) {
-      // Async append scan event to Cassandra hardware scan trail
       cassandra.logEvent('lumora_audit', 'scan_trails_by_device', `${shopId}#SCANNER`, Date.now(), {
         barcode,
         source: 'REDIS_CACHE_HIT',
@@ -73,12 +83,11 @@ posRouter.get('/barcode/:barcode', async (req: Request, res: Response) => {
     return res.status(400).json({ error: `Product "${product.name}" is marked INACTIVE and cannot be sold.` });
   }
 
-  // Pre-warm Redis cache for subsequent scans
+  // Pre-warm Redis cache strictly namespaced by tenant
   try {
-    await redis.set(`cache:barcode:${barcode}`, product, 3600);
-    // Also cache by product SKU
+    await redis.set(cacheKey, product, 3600);
     if (product.sku && product.sku !== barcode) {
-      await redis.set(`cache:barcode:${product.sku}`, product, 3600);
+      await redis.set(`cache:tenant:${shopId}:barcode:${product.sku}`, product, 3600);
     }
   } catch {
     // ignore cache write error
@@ -110,9 +119,19 @@ posRouter.post('/calculate-preview', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Shop not found' });
   }
 
-  // Verify products and calculate
+  // Verify products and calculate with strict numerical bounds
   const taxItems: TaxCalculationItem[] = [];
   for (const item of items) {
+    const rawQty = Number(item.quantity);
+    if (!Number.isFinite(rawQty) || rawQty <= 0 || !Number.isInteger(rawQty)) {
+      return res.status(400).json({ error: 'Quantity must be a positive integer.' });
+    }
+
+    const rawDiscount = item.discount !== undefined ? Number(item.discount) : 0;
+    if (!Number.isFinite(rawDiscount) || rawDiscount < 0) {
+      return res.status(400).json({ error: 'Item discount cannot be negative or invalid.' });
+    }
+
     const product = db.prepare('SELECT * FROM products WHERE id = ? AND shop_id = ?').get(item.productId, shopId) as any;
     if (!product) {
       return res.status(400).json({ error: `Product with ID ${item.productId} not found` });
@@ -120,14 +139,18 @@ posRouter.post('/calculate-preview', (req: Request, res: Response) => {
 
     taxItems.push({
       unitPrice: product.price,
-      quantity: Math.max(1, parseInt(item.quantity) || 1),
-      discount: item.discount ? Math.max(0, parseFloat(item.discount)) : 0,
+      quantity: rawQty,
+      discount: rawDiscount,
       taxRate: product.tax_rate,
     });
   }
 
-  const discountAmount = discount ? Math.max(0, parseFloat(discount)) : 0;
-  const result = calculateAuthoritativeTax(taxItems, discountAmount, shop.tax_state || 'INTRA_STATE');
+  const rawOrderDiscount = discount !== undefined ? Number(discount) : 0;
+  if (!Number.isFinite(rawOrderDiscount) || rawOrderDiscount < 0) {
+    return res.status(400).json({ error: 'Order discount cannot be negative or invalid.' });
+  }
+
+  const result = calculateAuthoritativeTax(taxItems, rawOrderDiscount, shop.tax_state || 'INTRA_STATE');
 
   res.json({ calculation: result });
 });
@@ -203,29 +226,38 @@ posRouter.post('/checkout', (req: Request, res: Response) => {
     const itemsToInsert: any[] = [];
 
     for (const item of items) {
+      const rawQty = Number(item.quantity);
+      if (!Number.isFinite(rawQty) || rawQty <= 0 || !Number.isInteger(rawQty)) {
+        throw new Error(`Invalid quantity for item "${item.productId}". Must be a positive integer.`);
+      }
+
+      const rawDiscount = item.discount !== undefined ? Number(item.discount) : 0;
+      if (!Number.isFinite(rawDiscount) || rawDiscount < 0) {
+        throw new Error(`Invalid discount for item "${item.productId}". Cannot be negative.`);
+      }
+
       const product = db.prepare('SELECT * FROM products WHERE id = ? AND shop_id = ?').get(item.productId, shopId) as any;
       if (!product) {
         throw new Error(`Product "${item.productId}" not found in this shop`);
       }
 
-      const qty = Math.max(1, parseInt(item.quantity) || 1);
-      if (product.stock < qty) {
-        throw new Error(`Insufficient stock for "${product.name}". Available: ${product.stock}, Requested: ${qty}`);
+      if (product.stock < rawQty) {
+        throw new Error(`Insufficient stock for "${product.name}". Available: ${product.stock}, Requested: ${rawQty}`);
       }
 
       taxItems.push({
         unitPrice: product.price,
-        quantity: qty,
-        discount: item.discount ? Math.max(0, parseFloat(item.discount)) : 0,
+        quantity: rawQty,
+        discount: rawDiscount,
         taxRate: product.tax_rate,
       });
 
       itemsToInsert.push({
         productId: product.id,
         productName: product.name,
-        quantity: qty,
+        quantity: rawQty,
         unitPrice: product.price,
-        discount: item.discount ? Math.max(0, parseFloat(item.discount)) : 0,
+        discount: rawDiscount,
       });
     }
 

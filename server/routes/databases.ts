@@ -7,8 +7,13 @@ import {
   redis,
   cassandra,
 } from '../databases/manager.js';
+import { requireSuperAdmin } from '../services/auth.js';
+import { logAuditEvent } from '../services/audit.js';
 
 export const databasesRouter = Router();
+
+// Enterprise Security Hardening: All internal database tools require Super Admin privilege
+databasesRouter.use(requireSuperAdmin);
 
 // 1. Get real-time overview & metrics for all 4 databases
 databasesRouter.get('/overview', async (req: Request, res: Response) => {
@@ -59,24 +64,46 @@ databasesRouter.get('/samples', async (req: Request, res: Response) => {
   }
 });
 
-// 3. Execute interactive live query on selected database
+// 3. Execute interactive live query on selected database (Protected with strict DDL/destructive block)
 databasesRouter.post('/query', async (req: Request, res: Response) => {
   const { targetDatabase, queryText } = req.body;
   const start = performance.now();
 
   try {
     let result: any = null;
+    const sanitizedQuery = (queryText || '').trim();
+
+    // Security Hardening: Enforce strict READ-ONLY policies across all 4 database engines
+    const forbiddenPatterns = [
+      /\b(DROP|TRUNCATE|ALTER|ATTACH|DETACH|GRANT|REVOKE|DELETE|UPDATE|INSERT|REPLACE|PRAGMA|EXEC)\b/i,
+      /;/g, // Prevent query stacking/chaining
+      /\b(auth_tokens|password_hash)\b/i, // Prevent credential dump
+    ];
+
+    for (const pattern of forbiddenPatterns) {
+      if (pattern.test(sanitizedQuery)) {
+        return res.status(403).json({
+          error: 'Security Policy Violation: Database Console permits strictly audited, single-statement read-only SELECT queries. Modifying data or dumping authentication tables is forbidden.',
+        });
+      }
+    }
 
     if (targetDatabase === 'POSTGRES') {
-      const sql = queryText || 'SELECT id, invoice_number, subtotal, tax_amount, total_amount, payment_status FROM invoices ORDER BY created_at DESC LIMIT 10';
+      if (!sanitizedQuery.trim().toUpperCase().startsWith('SELECT')) {
+        return res.status(403).json({ error: 'Security Policy: Only SELECT statements are permitted on PostgreSQL engine.' });
+      }
+      const sql = sanitizedQuery || 'SELECT id, invoice_number, subtotal, tax_amount, total_amount, payment_status FROM invoices ORDER BY created_at DESC LIMIT 10';
       result = postgres.query(sql);
     } else if (targetDatabase === 'MONGO') {
-      // Basic parser for mongo commands (e.g. products_catalog.find({}))
-      const colName = queryText?.includes('customer_crm') ? 'customer_crm' : 'products_catalog';
+      const colName = sanitizedQuery.includes('customer_crm') ? 'customer_crm' : 'products_catalog';
       result = await mongo.collection(colName).find({}, { limit: 10 });
     } else if (targetDatabase === 'REDIS') {
-      const parts = (queryText || 'KEYS *').trim().split(/\s+/);
+      const parts = (sanitizedQuery || 'KEYS *').trim().split(/\s+/);
       const cmd = parts[0]?.toUpperCase();
+      const allowedRedisCmds = ['KEYS', 'GET', 'HGETALL', 'TTL'];
+      if (!allowedRedisCmds.includes(cmd)) {
+        return res.status(403).json({ error: `Security Policy: Redis command '${cmd}' is blocked. Only read-only inspect commands (KEYS, GET, HGETALL) are permitted.` });
+      }
       if (cmd === 'KEYS') {
         const keys = await redis.keys(parts[1] || '*');
         result = keys;
@@ -88,11 +115,23 @@ databasesRouter.post('/query', async (req: Request, res: Response) => {
         result = await redis.keys('*');
       }
     } else if (targetDatabase === 'CASSANDRA') {
-      const cql = queryText || 'SELECT * FROM lumora_audit.audit_events_by_day';
+      if (!sanitizedQuery.trim().toUpperCase().startsWith('SELECT')) {
+        return res.status(403).json({ error: 'Security Policy: Only SELECT CQL statements are permitted on Cassandra engine.' });
+      }
+      const cql = sanitizedQuery || 'SELECT * FROM lumora_audit.audit_events_by_day';
       result = await cassandra.executeCql(cql);
     } else {
       return res.status(400).json({ error: 'Invalid database target. Choose POSTGRES, MONGO, REDIS, or CASSANDRA.' });
     }
+
+    logAuditEvent({
+      actorId: req.auth!.userId!,
+      actorRole: 'SUPER_ADMIN',
+      action: 'DATABASE_QUERY_EXECUTED',
+      targetType: 'DATABASE',
+      targetId: targetDatabase,
+      after: { query: sanitizedQuery },
+    });
 
     const latencyMs = parseFloat((performance.now() - start).toFixed(3));
     res.json({

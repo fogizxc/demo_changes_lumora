@@ -1,13 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requireModule, requirePermission } from '../services/tenantContext.js';
 
 export const repairRouter = Router();
 
+// Enterprise Security Hardening: All repair lab operations require authenticated tenant membership + REPAIR module entitlement
+repairRouter.use(requireTenantContext);
+repairRouter.use(requireModule('REPAIR'));
+
 // 1. List Job Cards
-repairRouter.get('/jobs', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+repairRouter.get('/jobs', requirePermission('repair.jobs.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const status = req.query.status as string;
   const q = (req.query.q as string || '').trim();
 
@@ -30,8 +34,8 @@ repairRouter.get('/jobs', (req: Request, res: Response) => {
 });
 
 // 2. Create Job Card
-repairRouter.post('/jobs', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+repairRouter.post('/jobs', requirePermission('repair.jobs.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const {
     customerName,
     customerPhone,
@@ -70,8 +74,8 @@ repairRouter.post('/jobs', (req: Request, res: Response) => {
 });
 
 // 3. Update Job Status
-repairRouter.post('/jobs/:id/status', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+repairRouter.post('/jobs/:id/status', requirePermission('repair.jobs.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
   const { status, diagnosis, partsCost, laborCost } = req.body;
 
@@ -89,7 +93,7 @@ repairRouter.post('/jobs/:id/status', (req: Request, res: Response) => {
     params.push(diagnosis);
   }
   if (partsCost !== undefined || laborCost !== undefined) {
-    const job = db.prepare('SELECT parts_cost, labor_cost FROM repair_jobs WHERE id = ?').get(id) as any;
+    const job = db.prepare('SELECT parts_cost, labor_cost FROM repair_jobs WHERE id = ? AND business_id = ?').get(id, bizId) as any;
     const p = partsCost !== undefined ? partsCost : (job?.parts_cost || 0);
     const l = laborCost !== undefined ? laborCost : (job?.labor_cost || 0);
     query += ', parts_cost = ?, labor_cost = ?, total_cost = ?';

@@ -15,25 +15,25 @@ export const Header: React.FC = () => {
     switch (role) {
       case 'SUPER_ADMIN':
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#68151F] text-white border border-[#521017]">
+          <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider bg-[#68151F] text-white">
             Super Admin
           </span>
         );
       case 'SHOP_ADMIN':
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#102A43] text-white border border-[#081C2E]">
+          <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider bg-[#102A43] text-white">
             Shopkeeper
           </span>
         );
       case 'SHIFT_LEAD':
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#EBF7EE] text-[#1F7A37] border border-[#C6E7CD]">
+          <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider bg-[#EBF7EE] text-[#1F7A37] border border-[#C6E7CD]">
             Shift Lead
           </span>
         );
       case 'CASHIER':
         return (
-          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-[#FFF5E6] text-[#B25E00] border border-[#FFDEAC]">
+          <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider bg-[#FFF5E6] text-[#B25E00] border border-[#FFDEAC]">
             Cashier
           </span>
         );

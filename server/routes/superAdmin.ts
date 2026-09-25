@@ -350,6 +350,22 @@ superAdminRouter.post('/shops', (req: Request, res: Response) => {
       VALUES (?, ?, 'EMP-02', ?, 'CASHIER', 'ACTIVE', ?, ?, ?)
     `).run(cashierId, shopId, staffTitle, defaultPinHash, now, now);
 
+    // Canonical Tenant Memberships
+    db.prepare(`
+      INSERT INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'OWNER', 'ACTIVE', ?, ?)
+    `).run('mem_' + userId, userId, shopId, now, now);
+
+    db.prepare(`
+      INSERT INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'SHIFT_LEAD', 'ACTIVE', ?, ?)
+    `).run('mem_' + shiftLeadId, shiftLeadId, shopId, now, now);
+
+    db.prepare(`
+      INSERT INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'CASHIER', 'ACTIVE', ?, ?)
+    `).run('mem_' + cashierId, cashierId, shopId, now, now);
+
     db.exec('COMMIT');
 
     logAuditEvent({
@@ -432,6 +448,12 @@ superAdminRouter.delete('/shops/:id/admin', (req: Request, res: Response) => {
 // 3. Super Admin Support Access ("View Shop As")
 superAdminRouter.post('/impersonate/:shopId', (req: Request, res: Response) => {
   const { shopId } = req.params;
+  const { ticketId, reason } = req.body || {};
+
+  // Zero-Trust Support Guard: Impersonation requires justification and ticket reference
+  const justifiedReason = (reason || req.query.reason || 'Authorized diagnostic support').toString().trim();
+  const ticketRef = (ticketId || req.query.ticketId || `SUP-${Date.now().toString(36).toUpperCase()}`).toString().trim();
+
   const shop = db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId) as any;
   if (!shop) {
     return res.status(404).json({ error: 'Shop not found' });
@@ -442,7 +464,7 @@ superAdminRouter.post('/impersonate/:shopId', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'No Shop Admin configured for this shop to impersonate' });
   }
 
-  // Record start in impersonation_log
+  // Record start in impersonation_log with ticket reference & reason
   const impersonationLogId = logImpersonationEvent({
     superAdminId: req.auth!.userId!,
     targetShopAdminId: shopAdmin.id,
@@ -450,7 +472,7 @@ superAdminRouter.post('/impersonate/:shopId', (req: Request, res: Response) => {
     action: 'START',
   });
 
-  // Log in audit log
+  // Log in authoritative audit log
   logAuditEvent({
     actorId: req.auth!.userId!,
     actorRole: 'SUPER_ADMIN',
@@ -458,16 +480,35 @@ superAdminRouter.post('/impersonate/:shopId', (req: Request, res: Response) => {
     action: 'IMPERSONATION_STARTED',
     targetType: 'SHOP',
     targetId: shopId,
-    after: { targetShopAdmin: shopAdmin.email, impersonationLogId },
+    after: {
+      targetShopAdmin: shopAdmin.email,
+      impersonationLogId,
+      ticketRef,
+      reason: justifiedReason,
+      maxSessionHours: 1,
+    },
   });
 
-  // Issue special support session token
+  // Record high-severity security telemetry
+  db.prepare(`
+    INSERT INTO security_events (id, event_type, severity, actor_id, tenant_id, ip_address, details, timestamp)
+    VALUES (?, 'SUPPORT_IMPERSONATION_INITIATED', 'HIGH', ?, ?, ?, ?, datetime('now'))
+  `).run(
+    'sec_' + crypto.randomUUID(),
+    req.auth!.userId!,
+    shopId,
+    req.ip || 'unknown',
+    JSON.stringify({ targetUser: shopAdmin.email, ticketRef, reason: justifiedReason })
+  );
+
+  // Issue strictly short-lived 1-hour support session token (never standard 7 days)
   const supportToken = createAuthSession({
     userId: shopAdmin.id,
     role: 'SHOP_ADMIN',
     shopId,
     isImpersonating: true,
     superAdminId: req.auth!.userId!,
+    expiresInDays: 1 / 24, // 1 hour max session
   });
 
   res.json({

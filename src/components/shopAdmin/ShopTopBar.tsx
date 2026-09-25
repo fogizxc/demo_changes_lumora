@@ -7,12 +7,14 @@ import { getShopArchitecture, ARCHITECTURES } from '../../utils/architecture';
 interface ShopTopBarProps {
   onToggleSidebar?: () => void;
   onSearchFocus?: () => void;
+  onOpenCommandPalette?: () => void;
   managerName?: string;
   managerRole?: string;
 }
 
 export const ShopTopBar: React.FC<ShopTopBarProps> = ({
   onToggleSidebar,
+  onOpenCommandPalette,
   managerName,
   managerRole,
 }) => {
@@ -46,17 +48,21 @@ export const ShopTopBar: React.FC<ShopTopBarProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Keyboard shortcut Ctrl+K focus
+  // Keyboard shortcut Ctrl+K opens Command Palette
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
-        document.getElementById('global-shop-search')?.focus();
+        if (onOpenCommandPalette) {
+          onOpenCommandPalette();
+        } else {
+          document.getElementById('global-shop-search')?.focus();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onOpenCommandPalette]);
 
   const notifications = [
     { id: 1, title: 'Low Stock Alert', desc: 'Lay\'s Classic 52g is down to 4 units', time: '5m ago', type: 'warning' },
@@ -87,11 +93,13 @@ export const ShopTopBar: React.FC<ShopTopBarProps> = ({
               id="global-shop-search"
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search products, customers, orders..."
-              className="w-full bg-[#F9FAFB] border border-[#E5E7EB] hover:border-[#D1D5DB] focus:border-[#6A101C] focus:bg-white text-xs text-neutral-900 pl-10 pr-20 py-2.5 rounded-xl transition placeholder:text-neutral-400 focus:outline-none focus:ring-1 focus:ring-[#6A101C]"
+              onClick={() => onOpenCommandPalette?.()}
+              onFocus={() => onOpenCommandPalette?.()}
+              readOnly={Boolean(onOpenCommandPalette)}
+              placeholder="Search products, customers, orders... (Ctrl + K)"
+              className="w-full bg-[#F9FAFB] border border-[#E5E7EB] hover:border-[#D1D5DB] focus:border-[#6A101C] focus:bg-white text-xs text-neutral-900 pl-10 pr-20 py-2.5 rounded-xl transition placeholder:text-neutral-400 focus:outline-none focus:ring-1 focus:ring-[#6A101C] cursor-pointer"
             />
-            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:flex items-center space-x-1">
+            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:flex items-center space-x-1 pointer-events-none">
               <kbd className="px-1.5 py-0.5 text-[10px] font-semibold text-neutral-500 bg-white border border-neutral-200 rounded shadow-2xs">
                 Ctrl + K
               </kbd>

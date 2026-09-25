@@ -6,6 +6,7 @@ import { AllTransactions } from './AllTransactions';
 import { PlatformAuditLog } from './PlatformAuditLog';
 import { DatabaseConsole } from '../database/DatabaseConsole';
 import { IndustryEnginesHub } from '../industry/IndustryEnginesHub';
+import { CommandPalette } from '../common/CommandPalette';
 import {
   LayoutDashboard,
   Store,
@@ -25,6 +26,18 @@ type Tab = 'DASHBOARD' | 'SHOPS' | 'ENGINES' | 'INVOICES' | 'TRANSACTIONS' | 'AU
 export const SuperAdminLayout: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('DASHBOARD');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const navItems = [
     { id: 'DASHBOARD' as Tab, label: 'Dashboard', icon: LayoutDashboard },
@@ -38,6 +51,17 @@ export const SuperAdminLayout: React.FC = () => {
 
   return (
     <div className="flex flex-col md:flex-row min-h-[calc(100vh-4rem)] bg-[#F7F1E7]">
+      {/* Global Enterprise Command Palette */}
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigateTab={(tab) => {
+          if (tab === 'Dashboard') setActiveTab('DASHBOARD');
+          else if (tab === 'Products' || tab === 'Orders') setActiveTab('TRANSACTIONS');
+          else if (tab === 'Reports' || tab === 'Settings') setActiveTab('INVOICES');
+          else if (tab === 'Databases') setActiveTab('DATABASES');
+        }}
+      />
       {/* Mobile Sidebar Toggle Header */}
       <div className="md:hidden flex items-center justify-between p-4 bg-[#68151F] text-white border-b border-[#521017]">
         <div className="flex items-center space-x-2">

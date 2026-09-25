@@ -44,7 +44,6 @@ export type ShopSidebarTab =
   | 'Expenses'
   | 'Employees'
   | 'Settings'
-  | 'Databases'
   // Healthcare
   | 'Appointments'
   | 'Patients'
@@ -102,7 +101,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Consultations' as ShopSidebarTab, label: 'Prescriptions & Billing', icon: FileText },
           { id: 'Reports' as ShopSidebarTab, label: 'Clinical Analytics', icon: BarChart3 },
           { id: 'Employees' as ShopSidebarTab, label: 'Hospital Staff', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Clinic Settings', icon: Settings },
         ];
 
@@ -115,7 +113,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Freezes' as ShopSidebarTab, label: 'Freeze Requests', icon: PauseCircle },
           { id: 'Reports' as ShopSidebarTab, label: 'Club Revenue', icon: BarChart3 },
           { id: 'Employees' as ShopSidebarTab, label: 'Trainers & Staff', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Facility Settings', icon: Settings },
         ];
 
@@ -128,7 +125,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Dining POS' as ShopSidebarTab, label: 'Table Checkout POS', icon: Receipt },
           { id: 'Reports' as ShopSidebarTab, label: 'Dining Sales Reports', icon: BarChart3 },
           { id: 'Employees' as ShopSidebarTab, label: 'Waiters & Kitchen Staff', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Restaurant Settings', icon: Settings },
         ];
 
@@ -140,7 +136,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Returns & Deposits' as ShopSidebarTab, label: 'Returns & Deposits', icon: RotateCcw },
           { id: 'Reports' as ShopSidebarTab, label: 'Utilization Reports', icon: BarChart3 },
           { id: 'Employees' as ShopSidebarTab, label: 'Logistics Handlers', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Rental Policies', icon: Settings },
         ];
 
@@ -153,7 +148,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Repair Billing' as ShopSidebarTab, label: 'Repair Invoices', icon: Receipt },
           { id: 'Reports' as ShopSidebarTab, label: 'Repair Statistics', icon: BarChart3 },
           { id: 'Employees' as ShopSidebarTab, label: 'Lab Technicians', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Warranty Settings', icon: Settings },
         ];
 
@@ -170,7 +164,6 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
           { id: 'Reports' as ShopSidebarTab, label: 'Reports', icon: BarChart3 },
           { id: 'Expenses' as ShopSidebarTab, label: 'Expenses', icon: Receipt },
           { id: 'Employees' as ShopSidebarTab, label: 'Employees', icon: UserCheck },
-          { id: 'Databases' as ShopSidebarTab, label: '4-DB Engine', icon: Database },
           { id: 'Settings' as ShopSidebarTab, label: 'Settings', icon: Settings },
         ];
     }
@@ -288,13 +281,10 @@ export const ShopSidebar: React.FC<ShopSidebarProps> = ({
             </div>
           )}
 
-          {/* Version & Status */}
-          <div className="px-1 text-[11px]">
-            <div className="text-neutral-500 font-mono text-[10px]">LUMORA v1.0.0 • {architecture}</div>
-            <div className="flex items-center space-x-2 mt-1 text-neutral-400 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Isolated Tenant Online</span>
-            </div>
+          {/* Workspace Status */}
+          <div className="px-2 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-neutral-400">
+            <span className="truncate font-medium">{shop?.name || 'Main Outlet'}</span>
+            <span className="text-[10px] text-emerald-400 font-medium">Active</span>
           </div>
         </div>
       </aside>

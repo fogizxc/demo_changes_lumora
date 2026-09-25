@@ -1,19 +1,27 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requirePermission } from '../services/tenantContext.js';
 
 export const appointmentsRouter = Router();
 
+// Enterprise Security Hardening: All appointment operations require authenticated tenant membership
+appointmentsRouter.use(requireTenantContext);
+
 // 1. List universal appointments
-appointmentsRouter.get('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+appointmentsRouter.get('/', requirePermission('appointments.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const date = req.query.date as string;
   const resourceId = req.query.resourceId as string;
+  const branchId = req.tenantContext!.branchId || (req.query.branchId as string);
 
   let query = 'SELECT * FROM appointments WHERE business_id = ?';
   const params: any[] = [bizId];
 
+  if (branchId) {
+    query += ' AND (branch_id = ? OR branch_id IS NULL)';
+    params.push(branchId);
+  }
   if (date) {
     query += ' AND date = ?';
     params.push(date);
@@ -29,8 +37,8 @@ appointmentsRouter.get('/', (req: Request, res: Response) => {
 });
 
 // 2. Universal booking with DOUBLE-BOOKING CHECK
-appointmentsRouter.post('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+appointmentsRouter.post('/', requirePermission('appointments.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const {
     customerName,
     customerPhone,
@@ -43,11 +51,14 @@ appointmentsRouter.post('/', (req: Request, res: Response) => {
     endTime,
     fee,
     notes,
+    branchId: targetBranchId,
   } = req.body;
 
   if (!customerName || !resourceId || !date || !startTime || !endTime) {
     return res.status(400).json({ error: 'Customer name, resource, date, start time, and end time are required' });
   }
+
+  const branchId = targetBranchId || req.tenantContext!.branchId || null;
 
   // DOUBLE-BOOKING GUARD:
   const conflict = db.prepare(`
@@ -73,12 +84,12 @@ appointmentsRouter.post('/', (req: Request, res: Response) => {
 
   db.prepare(`
     INSERT INTO appointments (
-      id, business_id, customer_name, customer_phone, service_id, service_name,
+      id, business_id, branch_id, customer_name, customer_phone, service_id, service_name,
       resource_id, resource_name, resource_type, date, start_time, end_time,
       status, payment_status, fee, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'srv_gen', ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 'PENDING', ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, 'srv_gen', ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 'PENDING', ?, ?, ?, ?)
   `).run(
-    id, bizId, customerName, customerPhone || null, serviceName || 'General Service',
+    id, bizId, branchId, customerName, customerPhone || null, serviceName || 'General Service',
     resourceId, resourceName || 'Staff Member', resourceType || 'STAFF',
     date, startTime, endTime, fee || 0, notes || null, now, now
   );

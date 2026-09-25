@@ -147,32 +147,28 @@ export function requireEmployee(req: Request, res: Response, next: NextFunction)
     return res.status(403).json({ error: 'POS terminal requires Employee or Shop Admin authorization' });
   }
 
-  // If no shop context (e.g. Super Admin opening till), associate with first active shop
+  // If no shop context, require explicit tenant assignment
   if (!req.auth.shopId) {
-    const firstShop = db.prepare('SELECT id FROM shops LIMIT 1').get() as any;
-    if (firstShop) {
-      req.auth.shopId = firstShop.id;
+    if (req.auth.role === 'SUPER_ADMIN') {
+      const firstShop = db.prepare('SELECT id FROM shops LIMIT 1').get() as any;
+      if (firstShop) {
+        req.auth.shopId = firstShop.id;
+      } else {
+        return res.status(403).json({ error: 'No active shop configured for this terminal' });
+      }
     } else {
-      return res.status(403).json({ error: 'No active shop configured for this terminal' });
+      return res.status(403).json({ error: 'No active shop context associated with this session' });
     }
   }
 
-  // If no employeeId (e.g. Shop Admin or Super Admin), find or create an employee context for sale attribution
+  // If no employeeId (e.g. Shop Admin operating terminal), attribute to shop manager
   if (!req.auth.employeeId) {
-    let emp = db.prepare("SELECT id FROM employees WHERE shop_id = ? AND tier = 'SHIFT_LEAD' LIMIT 1").get(req.auth.shopId) as any;
-    if (!emp) {
-      emp = db.prepare("SELECT id FROM employees WHERE shop_id = ? LIMIT 1").get(req.auth.shopId) as any;
+    let emp = db.prepare("SELECT id FROM employees WHERE shop_id = ? AND status = 'ACTIVE' LIMIT 1").get(req.auth.shopId) as any;
+    if (emp) {
+      req.auth.employeeId = emp.id;
+    } else {
+      req.auth.employeeId = req.auth.userId || 'admin_terminal';
     }
-    if (!emp) {
-      const newEmpId = 'emp_' + crypto.randomUUID().substring(0, 8);
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO employees (id, shop_id, employee_id, name, tier, authentication_reference, status, created_at, updated_at)
-        VALUES (?, ?, 'LEAD-01', 'Store Lead', 'SHIFT_LEAD', ?, 'ACTIVE', ?, ?)
-      `).run(newEmpId, req.auth.shopId, bcrypt.hashSync('1234', 10), now, now);
-      emp = { id: newEmpId };
-    }
-    req.auth.employeeId = emp.id;
   }
 
   // Check shop suspension

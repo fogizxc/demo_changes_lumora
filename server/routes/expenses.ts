@@ -1,13 +1,16 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requirePermission } from '../services/tenantContext.js';
 
 export const expensesRouter = Router();
 
+// Enterprise Security Hardening: All expense records require authenticated tenant membership + finance permissions
+expensesRouter.use(requireTenantContext);
+
 // 1. List Expenses
-expensesRouter.get('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+expensesRouter.get('/', requirePermission('finance.expenses'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const category = req.query.category as string;
 
   let query = 'SELECT * FROM expenses WHERE business_id = ?';
@@ -26,9 +29,9 @@ expensesRouter.get('/', (req: Request, res: Response) => {
   res.json({ expenses, totalAmount });
 });
 
-// 2. Add Expense
-expensesRouter.post('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 2. Add Expense (Atomic execution)
+expensesRouter.post('/', requirePermission('finance.expenses'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { category, title, amount, paymentMethod, vendor, date, description } = req.body;
 
   if (!title || !amount || !category) {
@@ -42,7 +45,7 @@ expensesRouter.post('/', (req: Request, res: Response) => {
   db.prepare(`
     INSERT INTO expenses (id, business_id, category, title, amount, payment_method, vendor, date, description, created_by, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, bizId, category, title, amount, paymentMethod || 'CASH', vendor || null, expDate, description || null, req.auth?.userId || 'admin', now);
+  `).run(id, bizId, category, title, amount, paymentMethod || 'CASH', vendor || null, expDate, description || null, req.tenantContext!.actorId, now);
 
   res.status(201).json({ success: true, expense: { id, title, amount, category, date: expDate } });
 });

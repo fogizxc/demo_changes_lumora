@@ -82,7 +82,7 @@ export const SystemTestRunner: React.FC<Props> = ({ isOpen, onClose }) => {
                   )}
                   <div>
                     <h4 className="text-sm font-bold">
-                      {testOutput.allPassed ? 'All 14 Architecture & Security Tests Passed' : `${testOutput.failedCount} Test(s) Failed`}
+                      {testOutput.allPassed ? `All ${testOutput.totalTests} Architecture & Security Tests Passed` : `${testOutput.failedCount} Test(s) Failed`}
                     </h4>
                     <p className="text-xs opacity-80 mt-0.5">
                       {testOutput.passedCount} of {testOutput.totalTests} tests succeeded without warnings

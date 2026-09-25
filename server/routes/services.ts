@@ -1,20 +1,23 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requirePermission } from '../services/tenantContext.js';
 
 export const servicesRouter = Router();
 
+// Enterprise Security Hardening: All services catalog operations require authenticated tenant membership
+servicesRouter.use(requireTenantContext);
+
 // 1. List Services
 servicesRouter.get('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const services = db.prepare('SELECT * FROM services WHERE business_id = ? ORDER BY name ASC').all(bizId);
   res.json({ services });
 });
 
 // 2. Add Service
-servicesRouter.post('/', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+servicesRouter.post('/', requirePermission('services.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, description, category, durationMinutes, price, taxRate } = req.body;
 
   if (!name || price === undefined) {

@@ -55,10 +55,12 @@ export function calculateAuthoritativeTax(
   }
 
   const subtotal = roundCurrency(rawSubtotal);
-  const totalDiscount = roundCurrency(rawItemsDiscount + orderDiscount);
+  const boundedOrderDiscount = Math.min(subtotal, Math.max(0, Number.isFinite(orderDiscount) ? orderDiscount : 0));
+  const boundedItemsDiscount = Math.min(subtotal, Math.max(0, Number.isFinite(rawItemsDiscount) ? rawItemsDiscount : 0));
+  const totalDiscount = Math.min(subtotal, roundCurrency(boundedItemsDiscount + boundedOrderDiscount));
 
   // Distribute order discount proportionally across items if orderDiscount is present
-  const discountRatio = subtotal > 0 ? (subtotal - totalDiscount) / subtotal : 0;
+  const discountRatio = subtotal > 0 ? Math.max(0, (subtotal - totalDiscount) / subtotal) : 0;
 
   let totalTaxable = 0;
   let totalTax = 0;

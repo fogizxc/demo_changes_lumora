@@ -1,20 +1,24 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requireModule, requirePermission } from '../services/tenantContext.js';
 
 export const rentalRouter = Router();
 
+// Enterprise Security Hardening: All rental operations require authenticated tenant membership + RENTAL module entitlement
+rentalRouter.use(requireTenantContext);
+rentalRouter.use(requireModule('RENTAL'));
+
 // 1. Assets list
-rentalRouter.get('/assets', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+rentalRouter.get('/assets', requirePermission('rental.assets.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const assets = db.prepare('SELECT * FROM rental_assets WHERE business_id = ? ORDER BY name ASC').all(bizId);
   res.json({ assets });
 });
 
 // 2. Add Asset
-rentalRouter.post('/assets', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+rentalRouter.post('/assets', requirePermission('rental.assets.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, category, serialNumber, dailyRate, depositAmount, conditionNotes } = req.body;
 
   if (!name || !dailyRate || !depositAmount) {
@@ -33,15 +37,15 @@ rentalRouter.post('/assets', (req: Request, res: Response) => {
 });
 
 // 3. Bookings list
-rentalRouter.get('/bookings', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+rentalRouter.get('/bookings', requirePermission('rental.bookings.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const bookings = db.prepare('SELECT * FROM rental_bookings WHERE business_id = ? ORDER BY start_date DESC').all(bizId);
   res.json({ bookings });
 });
 
 // 4. Create Rental Booking with OVERLAPPING CONFLICT PREVENTION
-rentalRouter.post('/bookings', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+rentalRouter.post('/bookings', requirePermission('rental.bookings.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { assetId, customerName, customerPhone, startDate, endDate, notes } = req.body;
 
   if (!assetId || !customerName || !startDate || !endDate) {
@@ -54,7 +58,6 @@ rentalRouter.post('/bookings', (req: Request, res: Response) => {
   }
 
   // OVERLAP CONFLICT DETECTION:
-  // An overlap exists if: (existing.start <= new.end) AND (existing.end >= new.start)
   const overlap = db.prepare(`
     SELECT * FROM rental_bookings
     WHERE business_id = ? AND asset_id = ?
@@ -69,7 +72,6 @@ rentalRouter.post('/bookings', (req: Request, res: Response) => {
     });
   }
 
-  // Calculate rental duration in days
   const startD = new Date(startDate);
   const endD = new Date(endDate);
   const diffTime = Math.abs(endD.getTime() - startD.getTime());
@@ -92,7 +94,7 @@ rentalRouter.post('/bookings', (req: Request, res: Response) => {
   );
 
   // Update asset status to RENTED
-  db.prepare("UPDATE rental_assets SET status = 'RENTED' WHERE id = ?").run(asset.id);
+  db.prepare("UPDATE rental_assets SET status = 'RENTED' WHERE id = ? AND business_id = ?").run(asset.id, bizId);
 
   res.status(201).json({
     success: true,
@@ -110,8 +112,8 @@ rentalRouter.post('/bookings', (req: Request, res: Response) => {
 });
 
 // 5. Return Asset
-rentalRouter.post('/bookings/:id/return', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+rentalRouter.post('/bookings/:id/return', requirePermission('rental.bookings.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
   const { returnedDate, conditionNotes, lateFee } = req.body;
 
@@ -123,13 +125,12 @@ rentalRouter.post('/bookings/:id/return', (req: Request, res: Response) => {
   const now = new Date().toISOString();
   const returnD = returnedDate || now.split('T')[0];
 
-  // If returned past end_date and lateFee not given, calculate auto late fee
   let assessedLateFee = lateFee || 0;
   if (lateFee === undefined && returnD > booking.end_date) {
     const endMs = new Date(booking.end_date).getTime();
     const retMs = new Date(returnD).getTime();
     const overdueDays = Math.ceil((retMs - endMs) / (1000 * 60 * 60 * 24));
-    assessedLateFee = overdueDays * booking.daily_rate * 1.5; // 1.5x daily rate for late days
+    assessedLateFee = overdueDays * booking.daily_rate * 1.5;
   }
 
   db.prepare(`
@@ -138,8 +139,7 @@ rentalRouter.post('/bookings/:id/return', (req: Request, res: Response) => {
     WHERE id = ? AND business_id = ?
   `).run(returnD, assessedLateFee, now, id, bizId);
 
-  // Free asset back to AVAILABLE
-  db.prepare("UPDATE rental_assets SET status = 'AVAILABLE' WHERE id = ?").run(booking.asset_id);
+  db.prepare("UPDATE rental_assets SET status = 'AVAILABLE' WHERE id = ? AND business_id = ?").run(booking.asset_id, bizId);
 
   res.json({
     success: true,

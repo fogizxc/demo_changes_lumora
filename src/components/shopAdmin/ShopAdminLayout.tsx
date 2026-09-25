@@ -12,7 +12,6 @@ import { OrdersView } from './OrdersView';
 import { CustomersView } from './CustomersView';
 import { SuppliersView } from './SuppliersView';
 import { POSTerminal } from '../pos/POSTerminal';
-import { DatabaseConsole } from '../database/DatabaseConsole';
 import { HealthcareEngineView } from '../industry/HealthcareEngineView';
 import { GymEngineView } from '../industry/GymEngineView';
 import { RestaurantEngineView } from '../industry/RestaurantEngineView';
@@ -21,17 +20,26 @@ import { RepairEngineView } from '../industry/RepairEngineView';
 import { getShopArchitecture, ARCHITECTURES } from '../../utils/architecture';
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { CommandPalette } from '../common/CommandPalette';
 
 export const ShopAdminLayout: React.FC = () => {
   const { shop, user } = useAuth();
   const [activeTab, setActiveTab] = useState<ShopSidebarTab>('Dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   const architecture = getShopArchitecture(shop?.shop_type);
   const meta = ARCHITECTURES[architecture];
 
   return (
     <div className="min-h-screen bg-[#F8F9FB] text-neutral-900 flex font-sans antialiased">
+      {/* GLOBAL ENTERPRISE COMMAND PALETTE */}
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigateTab={(tab) => setActiveTab(tab as ShopSidebarTab)}
+      />
+
       {/* LEFT FIXED SIDEBAR - Strictly filtered to the active shop architecture */}
       <ShopSidebar
         activeTab={activeTab}
@@ -48,6 +56,7 @@ export const ShopAdminLayout: React.FC = () => {
         {/* STICKY TOP APP BAR */}
         <ShopTopBar
           onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           managerName={(user as any)?.name || (user?.email ? user.email.split('@')[0] : 'Manager')}
           managerRole={meta.managerRole}
         />
@@ -181,7 +190,6 @@ export const ShopAdminLayout: React.FC = () => {
           )}
 
           {activeTab === 'Employees' && <StaffManagement />}
-          {activeTab === 'Databases' && <DatabaseConsole />}
           {activeTab === 'Settings' && <BusinessProfile />}
         </main>
       </div>

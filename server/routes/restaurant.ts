@@ -1,13 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requireModule, requirePermission } from '../services/tenantContext.js';
 
 export const restaurantRouter = Router();
 
+// Enterprise Security Hardening: All restaurant operations require authenticated tenant membership + RESTAURANT module entitlement
+restaurantRouter.use(requireTenantContext);
+restaurantRouter.use(requireModule('RESTAURANT'));
+
 // 1. Tables list
-restaurantRouter.get('/tables', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.get('/tables', requirePermission('restaurant.tables.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const tables = db.prepare(`
     SELECT 
       t.*,
@@ -21,15 +25,15 @@ restaurantRouter.get('/tables', (req: Request, res: Response) => {
     ORDER BY t.table_number ASC
   `).all(bizId).map((t: any) => ({
     ...t,
-    items: t.items_json ? JSON.parse(t.items_json) : [],
+    items: parseJsonSafe(t.items_json, []),
   }));
 
   res.json({ tables });
 });
 
 // 2. Add Table
-restaurantRouter.post('/tables', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.post('/tables', requirePermission('restaurant.tables.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { tableNumber, capacity, floorSection } = req.body;
 
   if (!tableNumber) {
@@ -48,8 +52,8 @@ restaurantRouter.post('/tables', (req: Request, res: Response) => {
 });
 
 // 3. Update Table Status
-restaurantRouter.post('/tables/:id/status', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.post('/tables/:id/status', requirePermission('restaurant.tables.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
   const { status } = req.body;
 
@@ -63,8 +67,8 @@ restaurantRouter.post('/tables/:id/status', (req: Request, res: Response) => {
 });
 
 // 4. Orders list / KOT Tickets
-restaurantRouter.get('/orders', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.get('/orders', requirePermission('restaurant.orders.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const status = req.query.status as string;
 
   let query = 'SELECT * FROM restaurant_orders WHERE business_id = ?';
@@ -78,15 +82,15 @@ restaurantRouter.get('/orders', (req: Request, res: Response) => {
   query += ' ORDER BY created_at DESC';
   const orders = db.prepare(query).all(...params).map((o: any) => ({
     ...o,
-    items: JSON.parse(o.items_json || '[]'),
+    items: parseJsonSafe(o.items_json, []),
   }));
 
   res.json({ orders });
 });
 
 // 5. Create Order & Generate KOT (Kitchen Order Ticket)
-restaurantRouter.post('/orders', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.post('/orders', requirePermission('restaurant.orders.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { tableId, tableNumber, orderType, items, waiterName, notes } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -138,8 +142,8 @@ restaurantRouter.post('/orders', (req: Request, res: Response) => {
 });
 
 // 6. Update Order Status (KOT lifecycle: RECEIVED -> KITCHEN -> READY -> SERVED -> BILLED)
-restaurantRouter.post('/orders/:id/status', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.post('/orders/:id/status', requirePermission('restaurant.orders.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
   const { status } = req.body;
 
@@ -155,7 +159,7 @@ restaurantRouter.post('/orders/:id/status', (req: Request, res: Response) => {
   if (status === 'BILLED') {
     const order = db.prepare('SELECT table_id FROM restaurant_orders WHERE id = ?').get(id) as any;
     if (order?.table_id) {
-      db.prepare("UPDATE restaurant_tables SET status = 'BILLING' WHERE id = ?").run(order.table_id);
+      db.prepare("UPDATE restaurant_tables SET status = 'BILLING' WHERE id = ? AND business_id = ?").run(order.table_id, bizId);
     }
   }
 
@@ -163,10 +167,9 @@ restaurantRouter.post('/orders/:id/status', (req: Request, res: Response) => {
 });
 
 // 7. Settle Bill and Free Table
-restaurantRouter.post('/orders/:id/pay', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+restaurantRouter.post('/orders/:id/pay', requirePermission('restaurant.orders.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
-  const { paymentMethod } = req.body;
 
   const now = new Date().toISOString();
   const order = db.prepare('SELECT * FROM restaurant_orders WHERE id = ? AND business_id = ?').get(id, bizId) as any;
@@ -191,3 +194,13 @@ restaurantRouter.post('/orders/:id/pay', (req: Request, res: Response) => {
 
   res.json({ success: true, message: 'Bill settled successfully. Table is now vacant.' });
 });
+
+function parseJsonSafe(val: any, fallback: any): any {
+  if (!val) return fallback;
+  if (typeof val === 'object') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+}

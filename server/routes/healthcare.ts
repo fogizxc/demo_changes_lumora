@@ -1,13 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requireModule, requirePermission, logSensitiveDataAccess } from '../services/tenantContext.js';
 
 export const healthcareRouter = Router();
 
+// Enterprise Security Hardening: All healthcare operations require authenticated tenant membership + HEALTHCARE module entitlement
+healthcareRouter.use(requireTenantContext);
+healthcareRouter.use(requireModule('HEALTHCARE'));
+
 // 1. Overview stats
-healthcareRouter.get('/overview', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+healthcareRouter.get('/overview', requirePermission('healthcare.patient.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const todayStr = new Date().toISOString().split('T')[0];
 
   const totalPatients = (db.prepare('SELECT COUNT(id) as count FROM healthcare_patients WHERE business_id = ?').get(bizId) as any)?.count || 0;
@@ -41,9 +45,9 @@ healthcareRouter.get('/overview', (req: Request, res: Response) => {
   });
 });
 
-// 2. Patients list & search
-healthcareRouter.get('/patients', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 2. Patients list & search (Audited access)
+healthcareRouter.get('/patients', requirePermission('healthcare.patient.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const q = (req.query.q as string || '').trim();
 
   let query = 'SELECT * FROM healthcare_patients WHERE business_id = ?';
@@ -57,12 +61,23 @@ healthcareRouter.get('/patients', (req: Request, res: Response) => {
 
   query += ' ORDER BY created_at DESC';
   const patients = db.prepare(query).all(...params);
+
+  logSensitiveDataAccess({
+    tenantId: bizId,
+    actorId: req.tenantContext!.actorId,
+    actorRole: req.tenantContext!.role,
+    action: 'PATIENTS_LIST_VIEWED',
+    targetType: 'PATIENT_LIST',
+    targetId: bizId,
+    details: { resultCount: patients.length, searchQuery: q || null },
+  });
+
   res.json({ patients });
 });
 
 // 3. Register patient
-healthcareRouter.post('/patients', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+healthcareRouter.post('/patients', requirePermission('healthcare.patient.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, dateOfBirth, gender, bloodGroup, phone, email, address, emergencyContact, medicalHistory, allergies } = req.body;
 
   if (!name || !phone) {
@@ -84,6 +99,16 @@ healthcareRouter.post('/patients', (req: Request, res: Response) => {
     phone, email || null, address || null, emergencyContact || null, medicalHistory || null, allergies || null, now, now
   );
 
+  logSensitiveDataAccess({
+    tenantId: bizId,
+    actorId: req.tenantContext!.actorId,
+    actorRole: req.tenantContext!.role,
+    action: 'PATIENT_REGISTERED',
+    targetType: 'PATIENT',
+    targetId: id,
+    details: { patientNumber, name, bloodGroup },
+  });
+
   res.status(201).json({
     success: true,
     patient: {
@@ -99,14 +124,14 @@ healthcareRouter.post('/patients', (req: Request, res: Response) => {
 
 // 4. Doctors list
 healthcareRouter.get('/doctors', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const doctors = db.prepare('SELECT * FROM healthcare_doctors WHERE business_id = ? ORDER BY name ASC').all(bizId);
   res.json({ doctors });
 });
 
 // 5. Add doctor
-healthcareRouter.post('/doctors', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+healthcareRouter.post('/doctors', requirePermission('healthcare.doctor.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, specialization, department, qualification, licenseNumber, consultationFee, phone, email, availableDays } = req.body;
 
   if (!name || !specialization) {
@@ -131,7 +156,7 @@ healthcareRouter.post('/doctors', (req: Request, res: Response) => {
 
 // 6. Appointments list
 healthcareRouter.get('/appointments', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const date = req.query.date as string;
 
   let query = 'SELECT * FROM appointments WHERE business_id = ?';
@@ -147,9 +172,9 @@ healthcareRouter.get('/appointments', (req: Request, res: Response) => {
   res.json({ appointments });
 });
 
-// 7. Book appointment with DOUBLE-BOOKING PREVENTION
+// 7. Book appointment with strict double-booking prevention
 healthcareRouter.post('/appointments', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const { customerId, customerName, customerPhone, doctorId, serviceName, date, startTime, endTime, fee, notes } = req.body;
 
   if (!customerName || !doctorId || !date || !startTime || !endTime) {
@@ -161,8 +186,7 @@ healthcareRouter.post('/appointments', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Doctor not found in this healthcare organization' });
   }
 
-  // STRICT DOUBLE-BOOKING DETECTION:
-  // Check if this doctor already has an active appointment on the same date with overlapping time
+  // DOUBLE-BOOKING CONFLICT CHECK
   const conflict = db.prepare(`
     SELECT * FROM appointments
     WHERE business_id = ? AND resource_id = ? AND date = ?
@@ -214,7 +238,7 @@ healthcareRouter.post('/appointments', (req: Request, res: Response) => {
 
 // 8. Update appointment status
 healthcareRouter.post('/appointments/:id/status', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const { id } = req.params;
   const { status, paymentStatus } = req.body;
 
@@ -247,9 +271,9 @@ healthcareRouter.post('/appointments/:id/status', (req: Request, res: Response) 
   res.json({ success: true, id, status, paymentStatus });
 });
 
-// 9. Consultations & Medical Records (EHR)
-healthcareRouter.get('/consultations', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 9. Consultations & Medical Records (EHR) - Strictly guarded with explicit permission & auditing
+healthcareRouter.get('/consultations', requirePermission('healthcare.medical_record.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const patientId = req.query.patientId as string;
 
   let query = `
@@ -274,17 +298,27 @@ healthcareRouter.get('/consultations', (req: Request, res: Response) => {
   query += ' ORDER BY c.visit_date DESC, c.created_at DESC';
   const consultations = db.prepare(query).all(...params).map((c: any) => ({
     ...c,
-    vital_signs: JSON.parse(c.vital_signs || '{}'),
-    prescriptions: JSON.parse(c.prescriptions || '[]'),
-    lab_tests: JSON.parse(c.lab_tests || '[]'),
+    vital_signs: parseJsonSafe(c.vital_signs, {}),
+    prescriptions: parseJsonSafe(c.prescriptions, []),
+    lab_tests: parseJsonSafe(c.lab_tests, []),
   }));
+
+  logSensitiveDataAccess({
+    tenantId: bizId,
+    actorId: req.tenantContext!.actorId,
+    actorRole: req.tenantContext!.role,
+    action: 'EHR_CONSULTATION_RECORDS_VIEWED',
+    targetType: 'MEDICAL_RECORD',
+    targetId: patientId || 'MULTIPLE',
+    details: { recordsReturned: consultations.length },
+  });
 
   res.json({ consultations });
 });
 
-// 10. Record Clinical Consultation
-healthcareRouter.post('/consultations', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 10. Record Clinical Consultation (EHR)
+healthcareRouter.post('/consultations', requirePermission('healthcare.medical_record.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const {
     appointmentId,
     patientId,
@@ -335,6 +369,16 @@ healthcareRouter.post('/consultations', (req: Request, res: Response) => {
     `).run(now, appointmentId, bizId);
   }
 
+  logSensitiveDataAccess({
+    tenantId: bizId,
+    actorId: req.tenantContext!.actorId,
+    actorRole: req.tenantContext!.role,
+    action: 'EHR_CONSULTATION_RECORDED',
+    targetType: 'MEDICAL_RECORD',
+    targetId: id,
+    details: { patientId, doctorId, diagnosis },
+  });
+
   res.status(201).json({
     success: true,
     consultation: {
@@ -345,3 +389,13 @@ healthcareRouter.post('/consultations', (req: Request, res: Response) => {
     },
   });
 });
+
+function parseJsonSafe(val: any, fallback: any): any {
+  if (!val) return fallback;
+  if (typeof val === 'object') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+}

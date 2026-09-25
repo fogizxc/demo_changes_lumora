@@ -4,6 +4,7 @@ import { db } from '../db.js';
 import { createAuthSession, revokeToken } from '../services/auth.js';
 import { logAuditEvent } from '../services/audit.js';
 import { checkAndEnforceShopStatus } from '../services/commission.js';
+import { checkRateLimit, recordFailedAttempt, resetRateLimit, recordSecurityEvent } from '../services/security.js';
 
 export const authRouter = Router();
 
@@ -24,10 +25,63 @@ authRouter.post('/login-admin', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase()) as any;
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: 'Invalid email or password' });
+  const normalizedEmail = email.trim().toLowerCase();
+  const rateLimitKey = `admin_login:${normalizedEmail}`;
+  const ipKey = `ip:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+
+  // 1. Check Rate Limit & Lockout Status
+  const emailLimit = checkRateLimit(rateLimitKey, 5, 900); // 5 attempts, 15 min lock
+  const ipLimit = checkRateLimit(ipKey, 20, 900);
+
+  if (!emailLimit.allowed) {
+    recordSecurityEvent({
+      eventType: 'BRUTE_FORCE_BLOCKED',
+      severity: 'HIGH',
+      ipAddress: req.ip,
+      details: { email: normalizedEmail, lockedUntil: emailLimit.lockedUntil },
+    });
+    return res.status(429).json({
+      error: `Account temporarily locked due to excessive failed attempts. Please retry in ${emailLimit.lockMinutesRemaining} minutes.`,
+      lockout: true,
+      retryAfterMinutes: emailLimit.lockMinutesRemaining,
+    });
   }
+
+  if (!ipLimit.allowed) {
+    return res.status(429).json({
+      error: `Too many requests from this network. Please retry in ${ipLimit.lockMinutesRemaining} minutes.`,
+      lockout: true,
+    });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail) as any;
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    const failureResult = recordFailedAttempt(rateLimitKey, 5, 900);
+    recordFailedAttempt(ipKey, 20, 900);
+
+    recordSecurityEvent({
+      eventType: 'FAILED_ADMIN_LOGIN',
+      severity: failureResult.locked ? 'HIGH' : 'WARN',
+      ipAddress: req.ip,
+      details: { email: normalizedEmail, attempts: failureResult.attempts, locked: failureResult.locked },
+    });
+
+    if (failureResult.locked) {
+      return res.status(429).json({
+        error: `Account locked due to 5 consecutive failed login attempts. Retry in ${failureResult.lockMinutesRemaining} minutes.`,
+        lockout: true,
+      });
+    }
+
+    return res.status(401).json({
+      error: 'Invalid email or password',
+      remainingAttempts: Math.max(0, 5 - failureResult.attempts),
+    });
+  }
+
+  // Login succeeded: reset rate limit counters
+  resetRateLimit(rateLimitKey);
+  resetRateLimit(ipKey);
 
   let shop: any = null;
   if (user.role === 'SHOP_ADMIN') {
@@ -80,7 +134,28 @@ authRouter.post('/login-employee', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Shop ID, Employee ID, and PIN are required' });
   }
 
-  // 1. Check shop existence and status
+  const normalizedEmpId = employeeId.trim().toUpperCase();
+  const pinLockoutKey = `emp_pin:${shopId}:${normalizedEmpId}`;
+
+  // 1. Check PIN brute force rate limit (Max 5 attempts, 15 minute lock)
+  const pinLimit = checkRateLimit(pinLockoutKey, 5, 900);
+  if (!pinLimit.allowed) {
+    recordSecurityEvent({
+      eventType: 'PIN_BRUTE_FORCE_BLOCKED',
+      severity: 'HIGH',
+      tenantId: shopId,
+      actorId: normalizedEmpId,
+      ipAddress: req.ip,
+      details: { shopId, employeeId: normalizedEmpId, lockedUntil: pinLimit.lockedUntil },
+    });
+    return res.status(429).json({
+      error: `Terminal account is locked due to 5 consecutive failed PIN attempts. Please notify your Store Manager or retry in ${pinLimit.lockMinutesRemaining} minutes.`,
+      lockout: true,
+      retryAfterMinutes: pinLimit.lockMinutesRemaining,
+    });
+  }
+
+  // 2. Check shop existence and status
   const shop = db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId) as any;
   if (!shop) {
     return res.status(404).json({ error: 'Shop not found' });
@@ -95,11 +170,11 @@ authRouter.post('/login-employee', (req: Request, res: Response) => {
     });
   }
 
-  // 2. Query employee
+  // 3. Query employee
   const employee = db.prepare(`
     SELECT * FROM employees
     WHERE shop_id = ? AND employee_id = ?
-  `).get(shopId, employeeId.trim().toUpperCase()) as any;
+  `).get(shopId, normalizedEmpId) as any;
 
   if (!employee) {
     return res.status(401).json({ error: 'Employee not found in this shop' });
@@ -109,9 +184,34 @@ authRouter.post('/login-employee', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Employee account has been deactivated. Please contact your Shop Admin.' });
   }
 
+  // 4. Verify PIN with brute force detection
   if (!bcrypt.compareSync(pin, employee.authentication_reference)) {
-    return res.status(401).json({ error: 'Invalid PIN or credentials' });
+    const failureResult = recordFailedAttempt(pinLockoutKey, 5, 900);
+
+    recordSecurityEvent({
+      eventType: 'FAILED_PIN_LOGIN',
+      severity: failureResult.locked ? 'HIGH' : 'WARN',
+      tenantId: shopId,
+      actorId: employee.id,
+      ipAddress: req.ip,
+      details: { shopId, employeeId: normalizedEmpId, attempts: failureResult.attempts, locked: failureResult.locked },
+    });
+
+    if (failureResult.locked) {
+      return res.status(429).json({
+        error: `Terminal account locked: 5 consecutive incorrect PIN entries. Retry in ${failureResult.lockMinutesRemaining} minutes.`,
+        lockout: true,
+      });
+    }
+
+    return res.status(401).json({
+      error: 'Invalid PIN or credentials',
+      remainingAttempts: Math.max(0, 5 - failureResult.attempts),
+    });
   }
+
+  // Successful PIN authentication: reset brute force counter
+  resetRateLimit(pinLockoutKey);
 
   // 3. Create or reuse active POS Session
   let session = db.prepare(`

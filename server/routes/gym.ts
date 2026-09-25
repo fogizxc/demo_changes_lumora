@@ -1,13 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
-import { getActiveBusinessId } from './tenants.js';
+import { requireTenantContext, requireModule, requirePermission } from '../services/tenantContext.js';
 
 export const gymRouter = Router();
 
+// Enterprise Security Hardening: All gym operations require authenticated tenant membership + GYM module entitlement
+gymRouter.use(requireTenantContext);
+gymRouter.use(requireModule('GYM'));
+
 // 1. Overview stats
-gymRouter.get('/overview', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.get('/overview', requirePermission('gym.member.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const todayStr = new Date().toISOString().split('T')[0];
 
   const totalMembers = (db.prepare("SELECT COUNT(id) as count FROM gym_members WHERE business_id = ? AND status = 'ACTIVE'").get(bizId) as any)?.count || 0;
@@ -31,8 +35,8 @@ gymRouter.get('/overview', (req: Request, res: Response) => {
 });
 
 // 2. Members list
-gymRouter.get('/members', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.get('/members', requirePermission('gym.member.read'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const q = (req.query.q as string || '').trim();
 
   let query = `
@@ -63,8 +67,8 @@ gymRouter.get('/members', (req: Request, res: Response) => {
 });
 
 // 3. Register Member
-gymRouter.post('/members', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.post('/members', requirePermission('gym.member.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, phone, email, emergencyContact, trainerName, fitnessGoal, planId } = req.body;
 
   if (!name || !phone) {
@@ -103,14 +107,14 @@ gymRouter.post('/members', (req: Request, res: Response) => {
 
 // 4. Plans list
 gymRouter.get('/plans', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+  const bizId = req.tenantContext!.tenantId;
   const plans = db.prepare('SELECT * FROM gym_plans WHERE business_id = ? ORDER BY price ASC').all(bizId);
   res.json({ plans });
 });
 
 // 5. Create Plan
-gymRouter.post('/plans', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.post('/plans', requirePermission('gym.plans.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, description, durationMonths, price, benefits, freezeLimitDays } = req.body;
 
   if (!name || !durationMonths || price === undefined) {
@@ -129,8 +133,8 @@ gymRouter.post('/plans', (req: Request, res: Response) => {
 });
 
 // 6. Freeze Membership
-gymRouter.post('/memberships/freeze', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.post('/memberships/freeze', requirePermission('gym.member.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { membershipId, freezeDays } = req.body;
 
   if (!membershipId || !freezeDays || freezeDays <= 0) {
@@ -154,7 +158,7 @@ gymRouter.post('/memberships/freeze', (req: Request, res: Response) => {
   const now = new Date();
   const frozenUntil = new Date(now.getTime() + freezeDays * 86400000).toISOString().split('T')[0];
 
-  // Also extend the membership end date by the frozen days!
+  // Extend the membership end date by the frozen days
   const currentEnd = new Date(ms.end_date);
   const newEnd = new Date(currentEnd.getTime() + freezeDays * 86400000).toISOString().split('T')[0];
 
@@ -173,8 +177,8 @@ gymRouter.post('/memberships/freeze', (req: Request, res: Response) => {
 });
 
 // 7. Renew Membership
-gymRouter.post('/memberships/renew', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.post('/memberships/renew', requirePermission('gym.member.write'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { memberId, planId } = req.body;
 
   if (!memberId || !planId) {
@@ -207,8 +211,8 @@ gymRouter.post('/memberships/renew', (req: Request, res: Response) => {
 });
 
 // 8. Member Attendance Check-in
-gymRouter.post('/attendance/checkin', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+gymRouter.post('/attendance/checkin', requirePermission('gym.attendance.manage'), (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { memberId, workoutType, notes } = req.body;
 
   if (!memberId) {

@@ -1,95 +1,129 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db.js';
 import crypto from 'node:crypto';
+import { resolveTenantContext, requireTenantContext } from '../services/tenantContext.js';
+import { logAuditEvent } from '../services/audit.js';
 
 export const tenantsRouter = Router();
 
-// Helper to get active business id
+/**
+ * Enterprise Canonical Tenant Resolver:
+ * CLIENT REQUESTS. SERVER AUTHORIZES. DATABASE ENFORCES.
+ * 
+ * Tenant identity MUST be derived from:
+ * Authenticated Identity -> Tenant Membership -> Authorized Tenant
+ * 
+ * NEVER trust client x-business-id headers or unauthenticated fallbacks.
+ */
 export function getActiveBusinessId(req: Request, targetIndustry?: string): string {
-  // 1. If request has explicit header or session override
-  const headerBiz = req.headers['x-business-id'] as string;
-  if (headerBiz) return headerBiz;
-
-  // 2. Infer industry from targetIndustry argument OR request URL path
-  let industry = targetIndustry;
-  if (!industry && req.originalUrl) {
-    if (req.originalUrl.includes('/api/healthcare')) industry = 'HEALTHCARE';
-    else if (req.originalUrl.includes('/api/gym')) industry = 'GYM';
-    else if (req.originalUrl.includes('/api/restaurant')) industry = 'RESTAURANT';
-    else if (req.originalUrl.includes('/api/repair')) industry = 'REPAIR';
-    else if (req.originalUrl.includes('/api/rental')) industry = 'RENTAL';
+  // 1. If TenantContext is already resolved on request
+  if (req.tenantContext?.tenantId && req.tenantContext.tenantId !== 'platform_root') {
+    return req.tenantContext.tenantId;
   }
 
-  // 3. If authenticated user has matching industry shop
+  // 2. If authenticated session has shopId / tenantId bound to token
   if (req.auth?.shopId) {
-    if (!industry) return req.auth.shopId;
-    const userBiz = db.prepare('SELECT industry FROM businesses WHERE id = ?').get(req.auth.shopId) as any;
-    if (userBiz && userBiz.industry === industry) {
-      return req.auth.shopId;
+    // If client supplied x-business-id header, verify it strictly matches authorized token
+    const clientHeader = req.headers['x-business-id'] as string;
+    if (clientHeader && clientHeader !== req.auth.shopId && req.auth.role !== 'SUPER_ADMIN') {
+      // Hostile attempt to spoof tenant ID: enforce authorized tenant identity
+      console.warn(`[SECURITY WARNING] Client attempted tenant spoofing with header ${clientHeader}, enforcing authorized ${req.auth.shopId}`);
     }
-    const userShop = db.prepare('SELECT shop_type FROM shops WHERE id = ?').get(req.auth.shopId) as any;
-    if (userShop) {
-      const st = (userShop.shop_type || '').toUpperCase();
-      if (
-        st.includes(industry) ||
-        (industry === 'HEALTHCARE' && (st.includes('HOSPITAL') || st.includes('CLINIC'))) ||
-        (industry === 'GYM' && (st.includes('FITNESS') || st.includes('WORKOUT'))) ||
-        (industry === 'RESTAURANT' && (st.includes('DINING') || st.includes('CAFE') || st.includes('FOOD'))) ||
-        (industry === 'RENTAL' && (st.includes('FLEET') || st.includes('EQUIPMENT'))) ||
-        (industry === 'REPAIR' && (st.includes('SERVICE') || st.includes('WORKSHOP')))
-      ) {
-        return req.auth.shopId;
-      }
-    }
+    return req.auth.shopId;
   }
 
-  // 4. Return matching seeded business for that industry
-  if (industry) {
-    const indBiz = db.prepare('SELECT id FROM businesses WHERE industry = ? LIMIT 1').get(industry) as any;
-    if (indBiz) return indBiz.id;
+  // 3. Super Admin elevation with explicit target tenant
+  if (req.auth?.role === 'SUPER_ADMIN') {
+    const clientHeader = req.headers['x-business-id'] as string;
+    if (clientHeader) {
+      const exists = db.prepare('SELECT id FROM businesses WHERE id = ?').get(clientHeader) as any;
+      if (exists) return exists.id;
+    }
+    const firstBiz = db.prepare('SELECT id FROM businesses LIMIT 1').get() as any;
+    if (firstBiz) return firstBiz.id;
   }
 
-  return 'shp_urbanmart_01';
+  throw new Error('Tenant authorization failed: No valid tenant identity bound to authenticated context.');
 }
 
-// 1. List all available businesses
+// 1. List accessible businesses for authenticated user (or all if Super Admin)
 tenantsRouter.get('/businesses', (req: Request, res: Response) => {
-  const businesses = db.prepare(`
-    SELECT * FROM businesses ORDER BY created_at ASC
-  `).all().map((b: any) => ({
+  if (!req.auth) {
+    // Unauthenticated: return only public basic list without sensitive settings
+    const publicList = db.prepare(`
+      SELECT id, name, industry, business_type, status, city, country
+      FROM businesses WHERE status = 'ACTIVE'
+      ORDER BY name ASC
+    `).all();
+    return res.json({ businesses: publicList });
+  }
+
+  if (req.auth.role === 'SUPER_ADMIN') {
+    const businesses = db.prepare(`
+      SELECT * FROM businesses ORDER BY created_at ASC
+    `).all().map((b: any) => ({
+      ...b,
+      enabled_modules: parseJsonSafe(b.enabled_modules, []),
+      tax_configuration: parseJsonSafe(b.tax_configuration, {}),
+      settings: parseJsonSafe(b.settings, {}),
+    }));
+    return res.json({ businesses });
+  }
+
+  // Standard user or employee: ONLY return businesses for which they hold an active membership
+  const actorId = req.auth.userId || req.auth.employeeId;
+  const memberships = db.prepare(`
+    SELECT b.*, m.role as user_role, m.branch_id as user_branch_id
+    FROM user_tenant_memberships m
+    JOIN businesses b ON b.id = m.tenant_id
+    WHERE m.user_id = ? AND m.status = 'ACTIVE' AND b.status = 'ACTIVE'
+    ORDER BY b.name ASC
+  `).all(actorId).map((b: any) => ({
     ...b,
-    enabled_modules: JSON.parse(b.enabled_modules || '[]'),
-    tax_configuration: JSON.parse(b.tax_configuration || '{}'),
-    settings: JSON.parse(b.settings || '{}'),
+    enabled_modules: parseJsonSafe(b.enabled_modules, []),
+    tax_configuration: parseJsonSafe(b.tax_configuration, {}),
+    settings: parseJsonSafe(b.settings, {}),
   }));
 
-  res.json({ businesses });
+  res.json({ businesses: memberships });
 });
 
-// 2. Get current active business & branches
-tenantsRouter.get('/current', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
-  const business = db.prepare('SELECT * FROM businesses WHERE id = ?').get(bizId) as any;
+// 2. Get current active business & branches (Server Authorized)
+tenantsRouter.get('/current', resolveTenantContext, (req: Request, res: Response) => {
+  const ctx = req.tenantContext;
+  if (!ctx) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
 
+  const business = db.prepare('SELECT * FROM businesses WHERE id = ?').get(ctx.tenantId) as any;
   if (!business) {
     return res.status(404).json({ error: 'Business not found' });
   }
 
-  const branches = db.prepare('SELECT * FROM branches WHERE business_id = ? ORDER BY created_at ASC').all(bizId);
+  const branches = db.prepare('SELECT * FROM branches WHERE business_id = ? ORDER BY created_at ASC').all(ctx.tenantId);
 
   res.json({
     business: {
       ...business,
-      enabled_modules: JSON.parse(business.enabled_modules || '[]'),
-      tax_configuration: JSON.parse(business.tax_configuration || '{}'),
-      settings: JSON.parse(business.settings || '{}'),
+      enabled_modules: ctx.enabledModules,
+      tax_configuration: parseJsonSafe(business.tax_configuration, {}),
+      settings: parseJsonSafe(business.settings, {}),
     },
     branches,
+    userContext: {
+      role: ctx.role,
+      permissions: ctx.permissions,
+      actorId: ctx.actorId,
+    },
   });
 });
 
-// 3. Switch active business in session
+// 3. Secure Tenant Switching: Strictly verifies membership before allowing switch
 tenantsRouter.post('/switch', (req: Request, res: Response) => {
+  if (!req.auth) {
+    return res.status(401).json({ error: 'Authentication required to switch tenant.' });
+  }
+
   const { businessId } = req.body;
   if (!businessId) {
     return res.status(400).json({ error: 'Business ID is required' });
@@ -97,13 +131,46 @@ tenantsRouter.post('/switch', (req: Request, res: Response) => {
 
   const business = db.prepare('SELECT * FROM businesses WHERE id = ?').get(businessId) as any;
   if (!business) {
-    return res.status(404).json({ error: 'Selected business does not exist' });
+    return res.status(404).json({ error: 'Target tenant does not exist' });
   }
 
-  // If user has a token, update the token's shop_id to the new business
-  if (req.auth?.token) {
+  if (business.status === 'SUSPENDED') {
+    return res.status(403).json({ error: 'Cannot switch to a suspended tenant.' });
+  }
+
+  const actorId = req.auth.userId || req.auth.employeeId;
+
+  // STRICT MEMBERSHIP VERIFICATION:
+  // Super Admin can switch to any tenant for support.
+  // Standard users MUST possess an active membership in user_tenant_memberships!
+  if (req.auth.role !== 'SUPER_ADMIN') {
+    const membership = db.prepare(`
+      SELECT * FROM user_tenant_memberships
+      WHERE user_id = ? AND tenant_id = ? AND status = 'ACTIVE'
+    `).get(actorId, businessId) as any;
+
+    if (!membership) {
+      return res.status(403).json({
+        error: 'Forbidden: You do not possess an active membership with this tenant. Access rejected.',
+        tenantId: businessId,
+      });
+    }
+  }
+
+  // Update token's shop_id to authorized tenant
+  if (req.auth.token) {
     db.prepare('UPDATE auth_tokens SET shop_id = ? WHERE token = ?').run(businessId, req.auth.token);
   }
+
+  logAuditEvent({
+    actorId: actorId || 'UNKNOWN',
+    actorRole: req.auth.role,
+    shopId: businessId,
+    action: 'TENANT_SWITCHED',
+    targetType: 'TENANT',
+    targetId: businessId,
+    after: { tenantName: business.name, industry: business.industry },
+  });
 
   const branches = db.prepare('SELECT * FROM branches WHERE business_id = ?').all(businessId);
 
@@ -111,15 +178,15 @@ tenantsRouter.post('/switch', (req: Request, res: Response) => {
     success: true,
     business: {
       ...business,
-      enabled_modules: JSON.parse(business.enabled_modules || '[]'),
-      tax_configuration: JSON.parse(business.tax_configuration || '{}'),
-      settings: JSON.parse(business.settings || '{}'),
+      enabled_modules: parseJsonSafe(business.enabled_modules, []),
+      tax_configuration: parseJsonSafe(business.tax_configuration, {}),
+      settings: parseJsonSafe(business.settings, {}),
     },
     branches,
   });
 });
 
-// 4. Onboard New Business (9-Step complete onboarding)
+// 4. Onboard New Business (Full 9-Step Onboarding with Automatic Membership Creation)
 tenantsRouter.post('/onboard', (req: Request, res: Response) => {
   const {
     name,
@@ -153,19 +220,19 @@ tenantsRouter.post('/onboard', (req: Request, res: Response) => {
   if (!modules || modules.length === 0) {
     switch (industry) {
       case 'HEALTHCARE':
-        modules = ['PATIENTS', 'DOCTORS', 'DEPARTMENTS', 'APPOINTMENTS', 'MEDICAL_RECORDS', 'BILLING', 'PAYMENTS', 'REPORTS'];
+        modules = ['HEALTHCARE', 'PATIENTS', 'DOCTORS', 'DEPARTMENTS', 'APPOINTMENTS', 'MEDICAL_RECORDS', 'BILLING', 'PAYMENTS', 'REPORTS'];
         break;
       case 'GYM':
-        modules = ['MEMBERS', 'PLANS', 'MEMBERSHIPS', 'ATTENDANCE', 'CLASSES', 'BILLING', 'REPORTS'];
+        modules = ['GYM', 'MEMBERS', 'PLANS', 'MEMBERSHIPS', 'ATTENDANCE', 'CLASSES', 'BILLING', 'REPORTS'];
         break;
       case 'RESTAURANT':
-        modules = ['TABLES', 'MENU', 'ORDERS', 'KOT', 'KITCHEN', 'BILLING', 'PAYMENTS'];
+        modules = ['RESTAURANT', 'TABLES', 'MENU', 'ORDERS', 'KOT', 'KITCHEN', 'BILLING', 'PAYMENTS', 'REPORTS'];
         break;
       case 'REPAIR':
-        modules = ['JOB_CARDS', 'TECHNICIANS', 'DIAGNOSIS', 'PARTS', 'ESTIMATES', 'BILLING'];
+        modules = ['REPAIR', 'JOB_CARDS', 'TECHNICIANS', 'DIAGNOSIS', 'PARTS', 'ESTIMATES', 'BILLING', 'REPORTS'];
         break;
       case 'RENTAL':
-        modules = ['RENTAL_ASSETS', 'BOOKINGS', 'DEPOSITS', 'INSPECTION', 'LATE_FEES'];
+        modules = ['RENTAL', 'RENTAL_ASSETS', 'BOOKINGS', 'DEPOSITS', 'INSPECTION', 'LATE_FEES', 'REPORTS'];
         break;
       default:
         modules = ['POS', 'INVENTORY', 'PRODUCTS', 'CUSTOMERS', 'SUPPLIERS', 'ORDERS', 'BILLING', 'EXPENSES', 'REPORTS'];
@@ -226,11 +293,20 @@ tenantsRouter.post('/onboard', (req: Request, res: Response) => {
     createdBranches.push({ id: branchId, business_id: id, name: b.name, code: b.code });
   }
 
-  // Also synchronize to 'shops' table for POS backward compatibility
+  // Synchronize to 'shops' table for POS backward compatibility
   db.prepare(`
     INSERT OR IGNORE INTO shops (id, name, gst_number, vat_number, phone, address, short_note, shop_type, tax_state, status, created_at, updated_at)
     VALUES (?, ?, 'GST-PENDING', NULL, ?, ?, 'Multi-industry initialized', ?, 'INTRA_STATE', 'ACTIVE', ?, ?)
   `).run(id, name, phone || '0000000000', address || 'HQ', industry.toLowerCase(), now, now);
+
+  // If creator is authenticated user, bind them as OWNER in user_tenant_memberships
+  if (req.auth?.userId) {
+    const memId = 'mem_' + crypto.randomBytes(6).toString('hex');
+    db.prepare(`
+      INSERT OR IGNORE INTO user_tenant_memberships (id, user_id, tenant_id, role, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'OWNER', 'ACTIVE', ?, ?)
+    `).run(memId, req.auth.userId, id, now, now);
+  }
 
   res.status(201).json({
     success: true,
@@ -248,16 +324,16 @@ tenantsRouter.post('/onboard', (req: Request, res: Response) => {
   });
 });
 
-// 5. Get list of branches
-tenantsRouter.get('/branches', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 5. Get list of branches for active tenant
+tenantsRouter.get('/branches', resolveTenantContext, (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const branches = db.prepare('SELECT * FROM branches WHERE business_id = ? ORDER BY created_at ASC').all(bizId);
   res.json({ branches });
 });
 
-// 6. Create new branch
-tenantsRouter.post('/branches', (req: Request, res: Response) => {
-  const bizId = getActiveBusinessId(req);
+// 6. Create new branch in active tenant
+tenantsRouter.post('/branches', resolveTenantContext, (req: Request, res: Response) => {
+  const bizId = req.tenantContext!.tenantId;
   const { name, code, address, phone } = req.body;
 
   if (!name || !code) {
@@ -284,17 +360,23 @@ tenantsRouter.get('/roles-permissions', (req: Request, res: Response) => {
     roles: [
       { id: 'OWNER', name: 'Business Owner', description: 'Full business & financial sovereignty' },
       { id: 'ADMIN', name: 'Branch Admin', description: 'Operational administration of branch' },
-      { id: 'MANAGER', name: 'Department Manager', description: 'Supervises staff, scheduling & inventory' },
-      { id: 'STAFF', name: 'Operational Staff', description: 'Daily task execution & patient/customer handling' },
-      { id: 'CASHIER', name: 'Billing / Cashier', description: 'Point of sale, payment collection & tills' },
-    ],
-    professions: [
-      { id: 'DOCTOR', name: 'Physician / Medical Doctor', industry: 'HEALTHCARE' },
-      { id: 'NURSE', name: 'Nurse / Triage Specialist', industry: 'HEALTHCARE' },
-      { id: 'FITNESS_TRAINER', name: 'Personal Trainer / Coach', industry: 'GYM' },
-      { id: 'CHEF', name: 'Executive Chef / Line Cook', industry: 'RESTAURANT' },
-      { id: 'TECHNICIAN', name: 'Hardware / Diagnostic Tech', industry: 'REPAIR' },
-      { id: 'STYLIST', name: 'Hair & Aesthetic Stylist', industry: 'SALON' },
+      { id: 'SHIFT_LEAD', name: 'Shift / Floor Lead', description: 'Supervises staff, voids, discounts & tills' },
+      { id: 'CASHIER', name: 'Billing / Cashier', description: 'Point of sale, payment collection & checkouts' },
+      { id: 'DOCTOR', name: 'Physician / Medical Doctor', description: 'Consultations, clinical diagnoses & prescriptions' },
+      { id: 'NURSE', name: 'Staff Nurse / OPD Assistant', description: 'Triage, vital signs recording & appointments' },
+      { id: 'FITNESS_COACH', name: 'Fitness Coach / Trainer', description: 'Member training & attendance tracking' },
+      { id: 'WAITER', name: 'Senior Waiter / Floor Staff', description: 'Table reservations & dining orders' },
+      { id: 'TECHNICIAN', name: 'Hardware Repair Specialist', description: 'Diagnostic bench testing & spare parts' },
     ],
   });
 });
+
+function parseJsonSafe(val: any, fallback: any): any {
+  if (!val) return fallback;
+  if (typeof val === 'object') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+}

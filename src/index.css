@@ -85,3 +85,19 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #68151F;
 }
+
+/* Accessible Focus Indicators (WCAG 2.2 AA) */
+:focus-visible {
+  outline: 2px solid #68151F;
+  outline-offset: 2px;
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
